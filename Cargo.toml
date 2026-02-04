@@ -1,0 +1,31 @@
+[package]
+name = "vulnera-adapter"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+# LSP
+tower-lsp = "0.20.0"
+
+# Async/runtime
+tokio = { version = "1.49", features = ["full"] }
+
+# HTTP + serialization
+reqwest = { version = "0.13.1", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5.8"
+
+# Logging
+tracing = "0.1.44"
+
+# Errors
+thiserror = "2.0"
+
+# Utils
+regex = "1.12"
+dashmap = "6.1"
