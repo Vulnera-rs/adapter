@@ -1617,6 +1617,7 @@ name = "vulnera-adapter"
 version = "0.1.1"
 dependencies = [
  "dashmap 6.1.0",
+ "once_cell",
  "regex",
  "reqwest",
  "serde",

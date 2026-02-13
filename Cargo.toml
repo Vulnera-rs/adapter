@@ -29,4 +29,5 @@ thiserror = "2.0"
 
 # Utils
 regex = "1.12"
+once_cell = "1.21"
 dashmap = "6.1"

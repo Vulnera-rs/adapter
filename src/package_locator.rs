@@ -1,43 +1,51 @@
+use once_cell::sync::Lazy;
 use regex::Regex;
 use tower_lsp::lsp_types::{Position, Range};
+
+static NPM_DEP_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#""(?P<pkg>[^"]+)"\s*:\s*"(?P<ver>[^"]+)""#).expect("valid npm dependency regex")
+});
+
+static PYPI_DEP_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?m)^\s*(?P<pkg>[A-Za-z0-9_.\-]+)\s*[=<>!~]+\s*(?P<ver>[^\s#]+)")
+        .expect("valid pypi dependency regex")
+});
+
+static CARGO_DEP_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?m)^\s*(?P<pkg>[A-Za-z0-9_\-]+)\s*=\s*"(?P<ver>[^"]+)""#)
+        .expect("valid cargo dependency regex")
+});
+
+static CARGO_INLINE_DEP_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?m)^\s*(?P<pkg>[A-Za-z0-9_\-]+)\s*=\s*\{[^}]*version\s*=\s*"(?P<ver>[^"]+)""#)
+        .expect("valid cargo inline table dependency regex")
+});
 
 pub(crate) fn find_package_version_range(
     text: &str,
     ecosystem: &str,
     package: &str,
 ) -> Option<Range> {
-    let patterns = match ecosystem.to_lowercase().as_str() {
-        "npm" => vec![format!(
-            r#"\"{}\"\s*:\s*\"(?P<ver>[^\"]+)\""#,
-            regex::escape(package)
-        )],
-        "pypi" | "pip" | "python" => vec![format!(
-            r"(?m)^\s*{}\s*[=<>!~]+\s*(?P<ver>[^\s#]+)",
-            regex::escape(package)
-        )],
-        "cargo" | "rust" => vec![
-            format!(
-                r#"(?m)^\s*{}\s*=\s*\"(?P<ver>[^\"]+)\""#,
-                regex::escape(package)
-            ),
-            format!(
-                r#"(?m)^\s*{}\s*=\s*\{{[^}}]*version\s*=\s*\"(?P<ver>[^\"]+)\""#,
-                regex::escape(package)
-            ),
-        ],
-        _ => vec![],
-    };
-
-    for pattern in patterns {
-        let regex = Regex::new(&pattern).ok()?;
-        if let Some(captures) = regex.captures(text)
-            && let Some(matched) = captures.name("ver")
-        {
-            return Some(span_to_range(text, matched.start(), matched.end()));
-        }
+    match ecosystem.to_lowercase().as_str() {
+        "npm" => find_with_regex(text, package, &NPM_DEP_REGEX),
+        "pypi" | "pip" | "python" => find_with_regex(text, package, &PYPI_DEP_REGEX),
+        "cargo" | "rust" => find_with_regex(text, package, &CARGO_DEP_REGEX)
+            .or_else(|| find_with_regex(text, package, &CARGO_INLINE_DEP_REGEX)),
+        _ => None,
     }
+}
 
-    None
+fn find_with_regex(text: &str, package: &str, regex: &Regex) -> Option<Range> {
+    regex.captures_iter(text).find_map(|captures| {
+        let pkg = captures.name("pkg")?.as_str();
+        if pkg == package {
+            captures
+                .name("ver")
+                .map(|matched| span_to_range(text, matched.start(), matched.end()))
+        } else {
+            None
+        }
+    })
 }
 
 fn span_to_range(text: &str, start: usize, end: usize) -> Range {
@@ -100,5 +108,17 @@ serde = { version = "1.0.100", features = ["derive"] }
 
         assert_eq!(range.start.line, 1);
         assert_eq!(range.end.line, 1);
+    }
+
+    #[test]
+    fn returns_none_for_missing_package() {
+        let content = r#"{
+    "dependencies": {
+        "serde": "1.0.100"
+    }
+}"#;
+
+        let range = find_package_version_range(content, "npm", "tokio");
+        assert!(range.is_none());
     }
 }
