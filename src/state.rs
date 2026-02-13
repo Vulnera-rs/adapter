@@ -2,14 +2,14 @@ use crate::api::{
     BatchDependencyAnalysisRequest, DependencyFileRequest, FileAnalysisResult, VulneraApiClient,
 };
 use crate::config::Config;
-use crate::diagnostics::build_diagnostics;
+use crate::diagnostics::{build_analysis_failure_diagnostic, build_diagnostics};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
-use tower_lsp::lsp_types::Url;
+use tokio::time::{Duration, sleep};
 use tower_lsp::Client;
+use tower_lsp::lsp_types::Url;
 
 #[derive(Debug, Clone)]
 pub struct DocumentSnapshot {
@@ -40,8 +40,12 @@ pub struct ServerState {
 
 impl ServerState {
     pub fn new(client: Client, config: Config) -> Self {
-        let http = VulneraApiClient::new(config.api_url.clone(), config.api_key.clone(), &config.user_agent)
-            .expect("http client initialization");
+        let http = VulneraApiClient::new(
+            config.api_url.clone(),
+            config.api_key.clone(),
+            &config.user_agent,
+        )
+        .expect("http client initialization");
 
         Self {
             client,
@@ -58,8 +62,9 @@ impl ServerState {
             let mut config = self.config.write().await;
             *config = next.clone();
         }
-        let http = VulneraApiClient::new(next.api_url.clone(), next.api_key.clone(), &next.user_agent)
-            .expect("http client initialization");
+        let http =
+            VulneraApiClient::new(next.api_url.clone(), next.api_key.clone(), &next.user_agent)
+                .expect("http client initialization");
         let mut http_guard = self.http.write().await;
         *http_guard = http;
     }
@@ -87,6 +92,25 @@ impl ServerState {
         let handle = tokio::spawn(async move {
             sleep(Duration::from_millis(debounce_ms)).await;
             if let Err(err) = state.run_analysis(uri_for_task.clone()).await {
+                if let Some(snapshot) = state.document_snapshot(&uri_for_task) {
+                    state
+                        .client
+                        .publish_diagnostics(
+                            uri_for_task.clone(),
+                            vec![build_analysis_failure_diagnostic(&err)],
+                            Some(snapshot.version),
+                        )
+                        .await;
+                }
+
+                state
+                    .client
+                    .show_message(
+                        tower_lsp::lsp_types::MessageType::ERROR,
+                        format!("Vulnera dependency analysis failed: {}", err),
+                    )
+                    .await;
+
                 state
                     .client
                     .log_message(
@@ -131,11 +155,12 @@ impl ServerState {
             .next()
             .ok_or_else(|| "Empty analysis response".to_string())?;
 
-        let diagnostics = build_diagnostics(
-            &result,
-            &snapshot.text,
-            snapshot.language_id.as_deref(),
-        );
+        if let Some(error) = result.error.clone() {
+            return Err(format!("Analysis service error: {}", error));
+        }
+
+        let diagnostics =
+            build_diagnostics(&result, &snapshot.text, snapshot.language_id.as_deref());
         self.client
             .publish_diagnostics(uri.clone(), diagnostics.clone(), Some(snapshot.version))
             .await;

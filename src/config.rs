@@ -5,16 +5,12 @@ use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum DetailLevel {
     Minimal,
+    #[default]
     Standard,
     Full,
-}
-
-impl Default for DetailLevel {
-    fn default() -> Self {
-        DetailLevel::Standard
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,16 +42,16 @@ impl Config {
     pub fn from_env() -> Self {
         let mut config = Config::default();
 
-        if let Ok(value) = env::var("VULNERA_API_URL") {
-            if let Ok(url) = Url::parse(&value) {
-                config.api_url = url;
-            }
+        if let Ok(value) = env::var("VULNERA_API_URL")
+            && let Ok(url) = Url::parse(&value)
+        {
+            config.api_url = url;
         }
 
-        if let Ok(value) = env::var("VULNERA_API_KEY") {
-            if !value.trim().is_empty() {
-                config.api_key = Some(value);
-            }
+        if let Ok(value) = env::var("VULNERA_API_KEY")
+            && !value.trim().is_empty()
+        {
+            config.api_key = Some(value);
         }
 
         if let Ok(value) = env::var("VULNERA_DETAIL_LEVEL") {
@@ -70,10 +66,10 @@ impl Config {
             config.enable_cache = value.eq_ignore_ascii_case("true");
         }
 
-        if let Ok(value) = env::var("VULNERA_DEBOUNCE_MS") {
-            if let Ok(parsed) = value.parse::<u64>() {
-                config.debounce_ms = parsed;
-            }
+        if let Ok(value) = env::var("VULNERA_DEBOUNCE_MS")
+            && let Ok(parsed) = value.parse::<u64>()
+        {
+            config.debounce_ms = parsed;
         }
 
         config
@@ -86,27 +82,24 @@ impl Config {
 
         let mut config = self.clone();
 
-        let scoped = options
-            .get("vulnera")
-            .cloned()
-            .unwrap_or(options.clone());
+        let scoped = options.get("vulnera").cloned().unwrap_or(options.clone());
 
-        if let Some(api_url) = scoped.get("apiUrl").and_then(|v| v.as_str()) {
-            if let Ok(url) = Url::parse(api_url) {
-                config.api_url = url;
-            }
+        if let Some(api_url) = scoped.get("apiUrl").and_then(|v| v.as_str())
+            && let Ok(url) = Url::parse(api_url)
+        {
+            config.api_url = url;
         }
 
-        if let Some(api_key) = scoped.get("apiKey").and_then(|v| v.as_str()) {
-            if !api_key.trim().is_empty() {
-                config.api_key = Some(api_key.to_string());
-            }
+        if let Some(api_key) = scoped.get("apiKey").and_then(|v| v.as_str())
+            && !api_key.trim().is_empty()
+        {
+            config.api_key = Some(api_key.to_string());
         }
 
-        if let Some(detail_level) = scoped.get("detailLevel").and_then(|v| v.as_str()) {
-            if let Some(parsed) = parse_detail_level(detail_level) {
-                config.detail_level = parsed;
-            }
+        if let Some(detail_level) = scoped.get("detailLevel").and_then(|v| v.as_str())
+            && let Some(parsed) = parse_detail_level(detail_level)
+        {
+            config.detail_level = parsed;
         }
 
         if let Some(compact_mode) = scoped.get("compactMode").and_then(|v| v.as_bool()) {
@@ -121,10 +114,10 @@ impl Config {
             config.debounce_ms = debounce_ms;
         }
 
-        if let Some(user_agent) = scoped.get("userAgent").and_then(|v| v.as_str()) {
-            if !user_agent.trim().is_empty() {
-                config.user_agent = user_agent.to_string();
-            }
+        if let Some(user_agent) = scoped.get("userAgent").and_then(|v| v.as_str())
+            && !user_agent.trim().is_empty()
+        {
+            config.user_agent = user_agent.to_string();
         }
 
         config

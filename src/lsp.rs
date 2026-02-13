@@ -30,16 +30,12 @@ impl LanguageServer for VulneraLanguageServer {
         self.state.update_config(config).await;
 
         let capabilities = ServerCapabilities {
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                TextDocumentSyncKind::FULL,
-            )),
-            code_action_provider: Some(CodeActionProviderCapability::Options(
-                CodeActionOptions {
-                    code_action_kinds: Some(vec![tower_lsp::lsp_types::CodeActionKind::QUICKFIX]),
-                    work_done_progress_options: Default::default(),
-                    resolve_provider: Some(false),
-                },
-            )),
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+                code_action_kinds: Some(vec![tower_lsp::lsp_types::CodeActionKind::QUICKFIX]),
+                work_done_progress_options: Default::default(),
+                resolve_provider: Some(false),
+            })),
             ..ServerCapabilities::default()
         };
 
@@ -49,7 +45,6 @@ impl LanguageServer for VulneraLanguageServer {
                 name: "Vulnera Dependency LSP".to_string(),
                 version: Some("0.1.0".to_string()),
             }),
-            ..InitializeResult::default()
         })
     }
 
@@ -68,7 +63,7 @@ impl LanguageServer for VulneraLanguageServer {
         let uri = doc.uri.clone();
         let file_name = uri
             .path_segments()
-            .and_then(|segments| segments.last())
+            .and_then(|mut segments| segments.next_back())
             .map(|s| s.to_string());
         let language_id = doc.language_id.clone();
         let ecosystem = detect_ecosystem(&file_name, Some(language_id.as_str()));
@@ -99,7 +94,7 @@ impl LanguageServer for VulneraLanguageServer {
         let previous = self.state.document_snapshot(&uri);
         let file_name = uri
             .path_segments()
-            .and_then(|segments| segments.last())
+            .and_then(|mut segments| segments.next_back())
             .map(|s| s.to_string());
         let language_id = previous.as_ref().and_then(|doc| doc.language_id.clone());
         let ecosystem = detect_ecosystem(&file_name, language_id.as_deref());
@@ -122,16 +117,17 @@ impl LanguageServer for VulneraLanguageServer {
         let uri = params.text_document.uri.clone();
         if let Some(text) = params.text {
             let previous = self.state.document_snapshot(&uri);
+            let version = previous.as_ref().map(|doc| doc.version).unwrap_or_default();
             let file_name = uri
                 .path_segments()
-                .and_then(|segments| segments.last())
+                .and_then(|mut segments| segments.next_back())
                 .map(|s| s.to_string());
             let language_id = previous.as_ref().and_then(|doc| doc.language_id.clone());
             let ecosystem = detect_ecosystem(&file_name, language_id.as_deref());
             self.state.upsert_document(DocumentSnapshot {
                 uri: uri.clone(),
                 text,
-                version: 0,
+                version,
                 language_id,
                 file_name: file_name.clone(),
                 workspace_path: Some(uri.path().to_string()),
@@ -158,10 +154,7 @@ impl LanguageServer for VulneraLanguageServer {
             return Ok(Some(Vec::new()));
         };
 
-        let recommendations = analysis
-            .result
-            .version_recommendations
-            .unwrap_or_default();
+        let recommendations = analysis.result.version_recommendations.unwrap_or_default();
         let doc_text = self.state.document_text(&uri).unwrap_or_default();
         let diagnostics = analysis.diagnostics.clone();
         let language_id = self
@@ -192,10 +185,16 @@ impl LanguageServer for VulneraLanguageServer {
 
 fn detect_ecosystem(file_name: &Option<String>, language_id: Option<&str>) -> String {
     if let Some(name) = file_name.as_deref() {
-        if name.ends_with("package.json") || name.ends_with("package-lock.json") || name.ends_with("yarn.lock") {
+        if name.ends_with("package.json")
+            || name.ends_with("package-lock.json")
+            || name.ends_with("yarn.lock")
+        {
             return "npm".to_string();
         }
-        if name.ends_with("requirements.txt") || name.ends_with("pyproject.toml") || name.ends_with("Pipfile") {
+        if name.ends_with("requirements.txt")
+            || name.ends_with("pyproject.toml")
+            || name.ends_with("Pipfile")
+        {
             return "pypi".to_string();
         }
         if name.ends_with("Cargo.toml") || name.ends_with("Cargo.lock") {
@@ -204,7 +203,10 @@ fn detect_ecosystem(file_name: &Option<String>, language_id: Option<&str>) -> St
         if name.ends_with("go.mod") || name.ends_with("go.sum") {
             return "go".to_string();
         }
-        if name.ends_with("pom.xml") || name.ends_with("build.gradle") || name.ends_with("build.gradle.kts") {
+        if name.ends_with("pom.xml")
+            || name.ends_with("build.gradle")
+            || name.ends_with("build.gradle.kts")
+        {
             return "maven".to_string();
         }
         if name.ends_with("composer.json") || name.ends_with("composer.lock") {

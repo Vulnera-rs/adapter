@@ -1,5 +1,5 @@
 use crate::api::{FileAnalysisResult, VulnerabilityDto};
-use regex::Regex;
+use crate::package_locator::find_package_version_range;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 
 pub fn build_diagnostics(
@@ -90,50 +90,21 @@ fn map_severity(severity: &str) -> DiagnosticSeverity {
 }
 
 fn find_package_range(text: &str, ecosystem: &str, package: &str) -> Option<Range> {
-    let pattern = match ecosystem.to_lowercase().as_str() {
-        "npm" => format!(r#""{}"\s*:\s*"(?P<ver>[^"]+)""#, regex::escape(package)),
-        "pypi" | "pip" | "python" => {
-            format!(r"(?m)^\s*{}\s*[=<>!~]+\s*(?P<ver>[^\s#]+)", regex::escape(package))
-        }
-        "cargo" | "rust" => format!(
-            r#"(?m)^\s*{}\s*=\s*"(?P<ver>[^"]+)""#,
-            regex::escape(package)
-        ),
-        _ => return None,
-    };
-
-    let regex = Regex::new(&pattern).ok()?;
-    let captures = regex.captures(text)?;
-    let match_span = captures.name("ver").map(|m| (m.start(), m.end()))?;
-
-    Some(span_to_range(text, match_span.0, match_span.1))
+    find_package_version_range(text, ecosystem, package)
 }
 
-fn span_to_range(text: &str, start: usize, end: usize) -> Range {
-    let (start_line, start_col) = offset_to_position(text, start);
-    let (end_line, end_col) = offset_to_position(text, end);
-    Range::new(Position::new(start_line, start_col), Position::new(end_line, end_col))
-}
-
-fn offset_to_position(text: &str, offset: usize) -> (u32, u32) {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    let mut count = 0usize;
-
-    for ch in text.chars() {
-        if count >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-        count += ch.len_utf8();
+pub fn build_analysis_failure_diagnostic(message: &str) -> Diagnostic {
+    Diagnostic {
+        range: default_range(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: None,
+        code_description: None,
+        source: Some("vulnera".to_string()),
+        message: format!("Dependency scan failed: {}", message),
+        related_information: None,
+        tags: None,
+        data: None,
     }
-
-    (line, col)
 }
 
 pub fn summarize_vulnerabilities(vuln: &VulnerabilityDto) -> String {
@@ -142,4 +113,19 @@ pub fn summarize_vulnerabilities(vuln: &VulnerabilityDto) -> String {
         parts.push(format!("References: {}", vuln.references.join(", ")));
     }
     parts.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_analysis_failure_diagnostic;
+    use tower_lsp::lsp_types::DiagnosticSeverity;
+
+    #[test]
+    fn failure_diagnostic_is_error_and_prefixed() {
+        let diagnostic = build_analysis_failure_diagnostic("upstream timeout");
+
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diagnostic.message.starts_with("Dependency scan failed:"));
+        assert!(diagnostic.message.contains("upstream timeout"));
+    }
 }
