@@ -71,6 +71,7 @@ pub enum ApiError {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DependencyFileRequest {
+    pub file_id: Option<String>,
     pub file_content: String,
     pub ecosystem: String,
     pub filename: Option<String>,
@@ -98,6 +99,7 @@ pub struct BatchDependencyAnalysisResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatchAnalysisMetadata {
+    pub request_id: Option<String>,
     pub total_files: usize,
     pub successful: usize,
     pub failed: usize,
@@ -111,6 +113,7 @@ pub struct BatchAnalysisMetadata {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileAnalysisResult {
+    pub file_id: Option<String>,
     pub filename: Option<String>,
     pub ecosystem: String,
     pub vulnerabilities: Vec<VulnerabilityDto>,

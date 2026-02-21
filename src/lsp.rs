@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeActionOptions, CodeActionOrCommand, CodeActionProviderCapability, CodeActionResponse,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    InitializeParams, InitializeResult, InitializedParams, MessageType, SaveOptions,
+    ServerCapabilities, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -30,7 +31,21 @@ impl LanguageServer for VulneraLanguageServer {
         self.state.update_config(config).await;
 
         let capabilities = ServerCapabilities {
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            text_document_sync: Some(TextDocumentSyncCapability::Options(
+                TextDocumentSyncOptions {
+                    open_close: Some(true),
+                    change: Some(TextDocumentSyncKind::INCREMENTAL),
+                    will_save: None,
+                    will_save_wait_until: None,
+                    save: Some(
+                        tower_lsp::lsp_types::TextDocumentSyncSaveOptions::SaveOptions(
+                            SaveOptions {
+                                include_text: Some(true),
+                            },
+                        ),
+                    ),
+                },
+            )),
             code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
                 code_action_kinds: Some(vec![tower_lsp::lsp_types::CodeActionKind::QUICKFIX]),
                 work_done_progress_options: Default::default(),
@@ -43,7 +58,7 @@ impl LanguageServer for VulneraLanguageServer {
             capabilities,
             server_info: Some(tower_lsp::lsp_types::ServerInfo {
                 name: "Vulnera Dependency LSP".to_string(),
-                version: Some("0.1.0".to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
         })
     }
@@ -85,13 +100,29 @@ impl LanguageServer for VulneraLanguageServer {
     async fn did_change(&self, params: tower_lsp::lsp_types::DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         let version = params.text_document.version;
-        let text = params
-            .content_changes
-            .last()
-            .map(|change| change.text.clone())
+        let previous = self.state.document_snapshot(&uri);
+        let mut text = previous
+            .as_ref()
+            .map(|doc| doc.text.clone())
             .unwrap_or_default();
 
-        let previous = self.state.document_snapshot(&uri);
+        if let Err(err) = apply_content_changes(&mut text, &params.content_changes) {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!(
+                        "Failed to apply incremental change for {}: {}. Falling back to last full text.",
+                        uri, err
+                    ),
+                )
+                .await;
+            text = params
+                .content_changes
+                .last()
+                .map(|change| change.text.clone())
+                .unwrap_or(text);
+        }
+
         let file_name = uri
             .path_segments()
             .and_then(|mut segments| segments.next_back())
@@ -185,19 +216,25 @@ impl LanguageServer for VulneraLanguageServer {
 
 fn detect_ecosystem(file_name: &Option<String>, language_id: Option<&str>) -> String {
     if let Some(name) = file_name.as_deref() {
+        let name = name.to_ascii_lowercase();
+
         if name.ends_with("package.json")
             || name.ends_with("package-lock.json")
             || name.ends_with("yarn.lock")
+            || name.ends_with("pnpm-lock.yaml")
         {
             return "npm".to_string();
         }
         if name.ends_with("requirements.txt")
             || name.ends_with("pyproject.toml")
-            || name.ends_with("Pipfile")
+            || name.ends_with("pipfile")
+            || name.ends_with("pipfile.lock")
+            || name.ends_with("poetry.lock")
+            || name.ends_with("uv.lock")
         {
             return "pypi".to_string();
         }
-        if name.ends_with("Cargo.toml") || name.ends_with("Cargo.lock") {
+        if name.ends_with("cargo.toml") || name.ends_with("cargo.lock") {
             return "cargo".to_string();
         }
         if name.ends_with("go.mod") || name.ends_with("go.sum") {
@@ -206,6 +243,7 @@ fn detect_ecosystem(file_name: &Option<String>, language_id: Option<&str>) -> St
         if name.ends_with("pom.xml")
             || name.ends_with("build.gradle")
             || name.ends_with("build.gradle.kts")
+            || name.ends_with("gradle.lockfile")
         {
             return "maven".to_string();
         }
@@ -214,7 +252,9 @@ fn detect_ecosystem(file_name: &Option<String>, language_id: Option<&str>) -> St
         }
     }
 
-    if let Some(language_id) = language_id {
+    if file_name.is_none()
+        && let Some(language_id) = language_id
+    {
         match language_id {
             "javascript" | "typescript" => return "npm".to_string(),
             "python" => return "pypi".to_string(),
@@ -226,5 +266,101 @@ fn detect_ecosystem(file_name: &Option<String>, language_id: Option<&str>) -> St
         }
     }
 
-    "npm".to_string()
+    "unknown".to_string()
+}
+
+fn apply_content_changes(
+    text: &mut String,
+    changes: &[TextDocumentContentChangeEvent],
+) -> std::result::Result<(), String> {
+    for change in changes {
+        if let Some(range) = change.range {
+            let start = position_to_offset_utf16(text, range.start)
+                .ok_or_else(|| format!("Invalid start position: {:?}", range.start))?;
+            let end = position_to_offset_utf16(text, range.end)
+                .ok_or_else(|| format!("Invalid end position: {:?}", range.end))?;
+
+            if start > end || end > text.len() {
+                return Err(format!(
+                    "Invalid edit range offsets: start={}, end={}, len={}",
+                    start,
+                    end,
+                    text.len()
+                ));
+            }
+
+            text.replace_range(start..end, &change.text);
+        } else {
+            *text = change.text.clone();
+        }
+    }
+
+    Ok(())
+}
+
+fn position_to_offset_utf16(text: &str, position: tower_lsp::lsp_types::Position) -> Option<usize> {
+    let target_line = position.line as usize;
+    let target_col = position.character as usize;
+
+    let mut line_start = 0usize;
+    for _ in 0..target_line {
+        let rel_newline = text[line_start..].find('\n')?;
+        line_start += rel_newline + 1;
+    }
+
+    let line_slice = &text[line_start..];
+    let line_end_rel = line_slice.find('\n').unwrap_or(line_slice.len());
+    let line_content = &line_slice[..line_end_rel];
+
+    let mut utf16_col = 0usize;
+    for (idx, ch) in line_content.char_indices() {
+        if utf16_col == target_col {
+            return Some(line_start + idx);
+        }
+        utf16_col += ch.len_utf16();
+        if utf16_col > target_col {
+            return None;
+        }
+    }
+
+    if utf16_col == target_col {
+        Some(line_start + line_end_rel)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_content_changes;
+    use tower_lsp::lsp_types::{Position, Range, TextDocumentContentChangeEvent};
+
+    #[test]
+    fn applies_incremental_range_change() {
+        let mut text = "dependencies:\nlodash=4.17.20\n".to_string();
+        let changes = vec![TextDocumentContentChangeEvent {
+            range: Some(Range {
+                start: Position::new(1, 7),
+                end: Position::new(1, 14),
+            }),
+            range_length: None,
+            text: "5.0.0".to_string(),
+        }];
+
+        apply_content_changes(&mut text, &changes).expect("change should apply");
+        assert_eq!(text, "dependencies:\nlodash=5.0.0\n");
+    }
+
+    #[test]
+    fn applies_full_document_change() {
+        let mut text = "old".to_string();
+        let changes = vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "new".to_string(),
+        }];
+
+        apply_content_changes(&mut text, &changes).expect("full sync should apply");
+        assert_eq!(text, "new");
+    }
 }
